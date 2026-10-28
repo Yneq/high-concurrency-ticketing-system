@@ -1,0 +1,25 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/ticketing}
+    username: ${DB_USERNAME:ticketing}
+    password: ${DB_PASSWORD:ticketing}
+    hikari:
+      maximum-pool-size: 20
+      connection-timeout: 60000
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  sql:
+    init:
+      mode: always
+server:
+  error:
+    include-message: always
+  tomcat:
+    threads:
+      max: 200
+    accept-count: 1500
+    max-connections: 2000
+ticketing:
+  race-window-ms: ${RACE_WINDOW_MS:50}
