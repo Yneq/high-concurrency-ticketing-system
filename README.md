@@ -2,15 +2,47 @@
 
 Java 21 · Spring Boot 3.5.16 · PostgreSQL 16 · Redis 7.4 + Lua · Kafka 3.9.1 · k6。
 
-這個專案從可重現的庫存競態，演進到具有原子扣庫存、冪等預約、非同步建單、模擬付款、到期補償與故障復原的本機教學系統。**新版已在使用者本機完成 Maven verify：17 個整合測試通過、0 失敗／錯誤／跳過，並成功封裝 JAR；Compose 與兩份 k6 本機基線也已通過；1000 VUs 的 admission 與完整旅程也各完成 10 萬次迭代，所有門檻通過。** [驗證狀態](VALIDATION.md) 會區分已測與未測。
+以高併發搶票為題的 Java 後端作品：從 V1 可重現的超賣問題，逐步完成原子扣庫存、Redis 入口閘門、Kafka 非同步建單、模擬付款、逾時釋放、冪等與故障恢復。
 
-另外已有 8 個核心單元測試與靜態檢查通過。新整合測試已驗證真實 PostgreSQL／Redis／Kafka 路徑及故障案例，本機 100 VUs／1000 次預約取得 100 次接受、0 超賣；另一個新活動有 100 筆完整付款旅程成功。
+**實測結果：17 個整合測試與 8 個核心單元測試通過；在本機 Docker Compose 中，兩份 k6 測試各完成 100,000 次迭代、1,000 VUs。每活動 100 張票，最終旅程有 100 筆付款完成，超賣、重複訂單與庫存差異皆為 0。** 這是單機短測結果，不代表 10 萬同時連線、10 萬 RPS 或生產環境容量保證。
 
-目標是不超賣、不重複建單、故障可復原；10 萬次請求目標已在本機 1000 VUs、每活動 100 張票的短測條件下完成，不是 10 萬筆成功訂單。既有 V1 的 1000 次成功只是超賣實驗，不能當成新版容量證明。
+## 專案導覽
+
+| 想了解的內容 | 文件 |
+| --- | --- |
+| 10 頁專案簡報 | [Gamma 簡報](https://gamma.app/docs/High-Concurrency-Ticketing-System-xi1ylkvvzj07pxg?mode=doc) · [簡報文字備份](docs/presentation.md) |
+| Controller → Service → DTO → DB 逐行說明 | [完整 HTML 導讀](docs/v1-v8-code-walkthrough.html)（下載後以瀏覽器開啟） |
+| 系統架構與資料流程 | [架構文件](docs/architecture.md) |
+| API 路徑與資料格式 | [OpenAPI 規格](docs/openapi.yaml) |
+| 重試、補償與資料一致性 | [Reliability](docs/reliability.md) |
+| 測試證據與驗證範圍 | [驗證狀態](VALIDATION.md) · [10 萬次實測](docs/k6-100k.md) · [1,000 次基線](docs/k6-baseline.md) |
+
+Gamma 簡報沿用文件目前的存取設定；若無法開啟，可直接閱讀 repo 內的文字備份。GitHub 會顯示 HTML 原始碼，完整互動導讀需下載開啟。
+
+## 最終架構
+
+```mermaid
+flowchart TD
+    Client[Client / k6] --> API[Spring Boot API]
+    API --> Gate[Redis + Lua 入口閘門]
+    Gate --> TX[PostgreSQL 本地交易]
+    TX --> Stock[條件式 UPDATE 扣庫存]
+    TX --> Reservation[Reservation]
+    TX --> Outbox[Outbox]
+    TX --> Accepted[202 + reservationId]
+    Outbox --> Publisher[Outbox Publisher]
+    Publisher --> Kafka[Kafka]
+    Kafka --> Consumer[冪等 Consumer]
+    Consumer --> Order[待付款訂單]
+    Order --> Payment[模擬付款 / 逾時釋放]
+    Payment --> DB[PostgreSQL 狀態與庫存]
+```
+
+PostgreSQL 是最終正確性邊界：扣庫存、預約與 Outbox 在同一交易內提交；Redis 僅作可重建的入口閘門。Kafka 採至少一次投遞，透過 Consumer 冪等處理與資料庫唯一約束避免重複建單。Redis 不可用時改走 DB 原子扣減。
 
 ## 10 萬次目標驗收
 
-1000 VUs，admission 與完整旅程各完成 100000 iterations，所有 thresholds 通過。
+2026-10-30，在單一本機 Docker 主機上，以 1,000 VUs 分別執行 admission 與完整旅程，各完成 100,000 shared iterations、無中斷，所有 thresholds 通過。兩次測試使用不同活動，各有 100 張初始票。
 
 | 指標 | 結果 |
 | --- | --- |
@@ -19,8 +51,10 @@ Java 21 · Spring Boot 3.5.16 · PostgreSQL 16 · Redis 7.4 + Lua · Kafka 3.9.1
 | admission P95／P99 | 857.25ms／1190.32ms |
 | 完整旅程 | 100 筆付款成功，預約／付款重放與庫存守恆檢查通過 |
 | 成功付款旅程 P95／P99 | 12.644s／12.873s（100 筆付款樣本） |
+| 執行時間 | admission 35.73 秒；完整旅程 29.17 秒 |
+| HTTP 失敗率／旅程錯誤 | 0%／0（售罄 409 視為預期業務回應） |
 
-[10 萬次完整結果與限制](docs/k6-100k.md)。大量請求是預期售罄回應；不以此宣稱 10 萬併發、10 萬 RPS 或可持續付款 TPS。
+[10 萬次完整結果與限制](docs/k6-100k.md) · [機器可讀數據](docs/k6-100k-results.json)。Admission P95/P99 計算入口請求延遲；付款旅程 P95/P99 只計 100 筆成功付款樣本，不能直接比較。大量請求是預期售罄回應；不以此宣稱 10 萬併發、10 萬 RPS 或可持續付款 TPS。
 
 ## 已完成的本機基線
 
@@ -118,7 +152,15 @@ docker compose run --rm --user "$(id -u):$(id -g)" k6
 bash scripts/acceptance.sh --load-only
 ```
 
-此模式會先核對本機整合測試報告、JAR 與來源檔時間；檢查不符就要求重新執行 mvn verify，不會無條件略過測試。
+重現已完成的 10 萬次測試：
+
+```bash
+REQUESTS=100000 VUS=1000 bash scripts/acceptance.sh --load-only
+```
+
+每次驗收會建立獨立活動，避免既有庫存與訂單污染結果。上述命令會對 admission 與完整旅程各執行 100,000 次迭代。
+
+`--load-only` 會先核對本機整合測試報告、JAR 與來源檔時間；檢查不符就要求重新執行 `mvn verify`，不會無條件略過測試。
 
 ## 稽核與補償
 
