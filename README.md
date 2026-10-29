@@ -1,179 +1,155 @@
-# High-Concurrency Ticketing System — Phase 1
+# High-Concurrency Ticketing System · V1–V8
 
-Java 21 / Spring Boot 3.5.16 / Spring Data JPA / PostgreSQL 16 / Docker Compose / k6。
+Java 21 · Spring Boot 3.5.16 · PostgreSQL 16 · Redis 7.4 + Lua · Kafka 3.9.1 · k6。
 
-這是一個**刻意存在 concurrency race condition 的教學實驗**，目的是親眼觀察大量請求直接存取資料庫時的 lost update 與超賣。請只用於本機實驗。這一階段不加入 Redis、Kafka、鎖、版本控制、身分驗證或冪等機制。
+這個專案從可重現的庫存競態，演進到具有原子扣庫存、冪等預約、非同步建單、模擬付款、到期補償與故障復原的本機教學系統。**新版已在使用者本機完成 Maven verify：17 個整合測試通過、0 失敗／錯誤／跳過，並成功封裝 JAR；Compose 與兩份 k6 本機基線也已通過；1000 VUs 的 admission 與完整旅程也各完成 10 萬次迭代，所有門檻通過。** [驗證狀態](VALIDATION.md) 會區分已測與未測。
 
-## 架構與競態
+另外已有 8 個核心單元測試與靜態檢查通過。新整合測試已驗證真實 PostgreSQL／Redis／Kafka 路徑及故障案例，本機 100 VUs／1000 次預約取得 100 次接受、0 超賣；另一個新活動有 100 筆完整付款旅程成功。
 
-```text
-k6：1000 VUs，每人一次 POST
-          ↓
-Spring Boot / TicketController
-          ↓
-@Transactional TicketService
-SELECT → 檢查 remaining > 0 → 延遲 50ms → remaining - 1 → UPDATE
-          ↓
-PostgreSQL / tickets：event_id=1，初始 100 張
-```
+目標是不超賣、不重複建單、故障可復原；10 萬次請求目標已在本機 1000 VUs、每活動 100 張票的短測條件下完成，不是 10 萬筆成功訂單。既有 V1 的 1000 次成功只是超賣實驗，不能當成新版容量證明。
 
-`@Transactional` 保證單次交易完整性，卻不會自動將「讀取→判斷→寫回」變成不可分割操作。沒有 `@Version` 或顯式鎖時，JPA 將記憶體內計算出的庫存值寫回：
+## 10 萬次目標驗收
 
-```text
-A 讀到 100；B 讀到 100
-A 寫入 99，成功；B 也寫入 99，成功
-成功 2 次，資料庫卻只少 1 張
-```
+1000 VUs，admission 與完整旅程各完成 100000 iterations，所有 thresholds 通過。
 
-因此庫存不一定為負數；即使有 `remaining >= 0` 約束也無法避免這種超賣。預設 50ms 教學延遲放大重現機率；`RACE_WINDOW_MS=0` 只是取消延遲，不會修好競態。交易、執行緒與連線排程會影響每次結果，不保證固定成功數。
+| 指標 | 結果 |
+| --- | --- |
+| 接受預約／業務拒絕 | 100／99900 |
+| 超賣／重複訂單／庫存差異 | 皆 0 |
+| admission P95／P99 | 857.25ms／1190.32ms |
+| 完整旅程 | 100 筆付款成功，預約／付款重放與庫存守恆檢查通過 |
+| 成功付款旅程 P95／P99 | 12.644s／12.873s（100 筆付款樣本） |
 
-這個 Phase 沒有訂單／預約紀錄表，每個 HTTP 200 代表一次成功承諾，以 k6 計數觀察超賣。回應中的 remaining 是該交易寫入值，可能立即被其他交易覆寫。
+[10 萬次完整結果與限制](docs/k6-100k.md)。大量請求是預期售罄回應；不以此宣稱 10 萬併發、10 萬 RPS 或可持續付款 TPS。
 
-## 啟動
+## 已完成的本機基線
 
-安裝並啟動 Docker Desktop 或相容的 Docker 引擎（含 Compose v2）。全容器模式不需本機 Java、Maven 或 k6。
+| 項目 | 實測 |
+| --- | --- |
+| Java 測試 | 17 個整合測試 + 8 個核心單元測試通過 |
+| admission | 100 VUs、1000 次請求，接受 100、業務拒絕 900；超賣／重複訂單／庫存差異皆 0 |
+| admission 延遲 | P95 548.90ms、P99 800.35ms |
+| 完整旅程 | 100 筆 Kafka 建單與模擬付款成功，重放檢查通過，庫存守恆 |
+| 完整旅程延遲 | P95 10.898s、P99 10.907s（100 筆付款樣本） |
 
-在本專案目錄執行：
+[完整基線報告與量測限制](docs/k6-baseline.md)。短測含大量售罄回應，不能解讀成可持續成功訂單 TPS。
 
-```bash
-docker compose up --build -d db app
-docker compose logs -f app
-```
+## 階段與實作
 
-看到 `Started TicketingApplication` 後離開日誌畫面，再查詢：
-
-```bash
-curl -i http://localhost:8080/api/tickets/1
-```
-
-預期 HTTP 200：
-
-```json
-{"eventId":1,"totalStock":100,"remaining":100}
-```
-
-應用啟動時執行 `schema.sql` 與 `data.sql`，建立 tickets 表及一筆活動庫存：**活動 1，共 100 張**，不是 100 個不同活動。重啟使用 `ON CONFLICT DO NOTHING`，保留既有庫存，不會補回 100 張。資料存在 Compose 的 PostgreSQL volume。
-
-若本機 5432 已被其他 PostgreSQL 佔用，可改用：
-
-```bash
-POSTGRES_PORT=5433 docker compose up --build -d db app
-```
-
-容器內 API 仍連到 db:5432；若改用本機 Java，請另設 `DB_URL=jdbc:postgresql://localhost:5433/ticketing`。後續 Compose 操作可持續帶入 `POSTGRES_PORT=5433`，避免重建時恢復預設埠。
-
-若 8080 也被佔用，可加上 `APP_PORT=18080`，例如 `POSTGRES_PORT=5433 APP_PORT=18080 docker compose up -d db app`，此時從主機使用 `http://localhost:18080`。Compose k6 仍直接連容器 app:8080。
-
-## API
-
-| 方法 | 路徑 | 結果 |
+| 版本 | 實作 | 對照方式 |
 | --- | --- | --- |
-| GET | `/api/tickets/{eventId}` | 200：eventId、totalStock、remaining |
-| POST | `/api/tickets/{eventId}/reserve` | 200：eventId、status=RESERVED、remaining |
+| V1 Race Condition | JPA read/check/write，50ms 教學延遲 | 預設關閉，啟用後僅活動 1 |
+| V2 Atomic SQL | `UPDATE ... SET remaining=remaining-1 WHERE event_id=? AND remaining>0` | `/api/v2/tickets/{event}/reserve`，同步建單 |
+| V3 Redis + Lua | 原子檢查與扣減快取庫存，token 去重 | `/api/v3/tickets/{event}/reserve`，同步建單 |
+| V4 Kafka | DB outbox → Kafka → 冪等 Consumer | `/api/tickets/{event}/reserve`，202 非同步建單 |
+| V5 Order & Payment | QUEUED → PENDING_PAYMENT → PAID／EXPIRED／FAILED | 查詢、模擬付款、定時到期釋放 |
+| V6 Reliability | DB 唯一鍵、列鎖、outbox 重送、Consumer retry／DLT、快取與庫存校正 | [故障說明](docs/reliability.md) |
+| V7 Load Testing | k6 admission 壓測，JSON 指標輸出，吞吐量、P95／P99、錯誤與庫存守恆 | [壓測說明](docs/load-testing.md) |
+| V8 Delivery | Compose、API 規格、架構、驗收腳本、面試說明 | [OpenAPI](docs/openapi.yaml)、[架構](docs/architecture.md) |
 
-POST 不需 request body，每次預約一張。售罄為 HTTP 409 (`SOLD_OUT`)，不存在活動為 404 (`EVENT_NOT_FOUND`)，eventId 非整數為 400。
+上述實作已通過 Java 整合與本機 1000 次基線驗收；也已完成上述 10 萬次目標；長時間穩態與多機測試仍待完成。
 
-```bash
-curl -i -X POST http://localhost:8080/api/tickets/1/reserve
-```
+## 一鍵啟動
 
-單次預約預期 remaining=99。試過此命令後，壓測前需重設。
-
-## 1000 個併發請求壓測
-
-先確認沒有其他測試仍在執行，再重設測試庫存（這會覆寫活動 1 的實驗結果）：
-
-```bash
-docker compose exec -T db psql -U ticketing -d ticketing -c 'UPDATE tickets SET total_stock = 100, remaining = 100 WHERE event_id = 1;'
-docker compose run --rm k6
-```
-
-`load-test/reserve.js` 使用 `per-vu-iterations`，1000 個 VUs 各發一次 POST，共 1000 次預約請求。setup 檢查初始庫存必須為 100/100，並設定共同目標時間（10 秒後）減少啟動偏差。這是 1000 個用戶端併發的 burst，並不表示伺服器同時執行 1000 個 DB 交易；Tomcat 最多 200 執行緒、連線池 20 條，其他請求會排隊。GET 前後檢查另計，所以 HTTP 請求總數會高於 1000。
-
-檢查 k6 輸出：
-
-- `iterations = 1000`：1000 次預約迭代完整結束。
-- `reservation_successes`：200 且 status=RESERVED 的數量。**大於 100 就直接證明超賣**。
-- `sold_out`：409 的數量，屬於可接受業務結果，不算 HTTP 失敗。
-- `unexpected_responses = 0`：沒有非預期回應或內容。
-- 最後日誌顯示 initial、final、DB decrements。成功數大於 `100 - final.remaining` 代表 lost update，即使成功數尚未超過 100。
-
-例如「成功 1000 次、最後剩 50」代表承諾了 1000 張，但資料庫僅扣掉 50 張；此例只是說明，實際值依機器而異。
-
-這份壓測的 threshold **刻意要求成功數 >100**；綠燈代表重現缺陷，不代表系統正確。未重現、漏跑或非預期錯誤會使 k6 失敗，請檢查日誌與資源，重設後重跑；可將延遲加大：
+先啟動 Docker Desktop，需有網路下載 Maven 依賴與容器映像。
 
 ```bash
-RACE_WINDOW_MS=200 docker compose up -d app
+cp .env.example .env
+docker compose up --build -d --wait --wait-timeout 180 db redis kafka app
+curl http://localhost:18080/actuator/health/readiness
+curl http://localhost:18080/api/tickets/2
 ```
 
-大量併發可能觸及本機檔案描述符或資源限制。連線錯誤、timeout 不能當成超賣證據；需先排除環境問題。請勿同時執行多份壓測或手動預約。
+預設主機 API 18080、PostgreSQL 5433；Redis／Kafka 只在 Compose 網路中。可用 APP_PORT、POSTGRES_PORT 覆寫。Kafka 的 advertised listener 是容器內 `kafka:9092`，此 Compose 沒有提供主機端 Kafka listener；本機 Java 建議用整合測試的 Testcontainers，或自行配置雙 listener。
 
-若已安裝本機 k6：
+資料庫活動 1 保留 V1 實驗；活動 2 初始化 100 張供新版使用。已有 volume 不會重設庫存。Redis、Kafka、PostgreSQL 均配置持久化 volume，但這是單機 demo，不提供 HA。
+
+## 跑一次完整訂單流程
 
 ```bash
-k6 run load-test/reserve.js
-# 其他地址或活動（該活動仍須有 100/100 庫存）
-k6 run -e BASE_URL=http://localhost:8080 -e EVENT_ID=1 load-test/reserve.js
+curl -i -X POST http://localhost:18080/api/tickets/2/reserve \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-001' \
+  -d '{"userId":"demo-user"}'
 ```
 
-直接檢查 DB：
+HTTP 202 回傳 `id`、`eventId`、`userId`、`status`、`expiresAt`。新預約通常是 QUEUED；已重送過的 key 會回傳同一 id 與最新狀態。沒有其他請求時，資料庫剩餘庫存應為 99。**202 表示已持久化保留庫存，還不是付款成功。**
+
+把下列 ID 換成回傳的 UUID：
 
 ```bash
-docker compose exec -T db psql -U ticketing -d ticketing -c 'SELECT * FROM tickets;'
+curl http://localhost:18080/api/reservations/ID
+curl http://localhost:18080/api/orders/ID
+curl -X POST http://localhost:18080/api/orders/ID/payment \
+  -H 'Content-Type: application/json' -d '{"success":true}'
 ```
 
-## 本機 Java 開發
+先等到 PENDING_PAYMENT 再付款；尚未建單為 409 ORDER_NOT_READY。`success:false` 表示模擬付款失敗，會釋放一次庫存。付款 body 必須有 boolean success。這不是金流整合，不處理真實款項。
 
-需要 JDK 21、Maven 3.9+、可用的 Docker 引擎。僅啟動資料庫，讓本機 API 使用 8080：
+相同 Idempotency-Key、相同 event/user 不會再次扣庫存或建單；變更 payload 回傳 409。同一 key 即使已過期／失敗也保留終態，若要再次購買必須換新 key。key 為全域、最多 128 個 ASCII 字元（英數、點、底線、冒號、連字號）。每次限一張；沒有登入或可信 userId 認證，僅供本機展示。
+
+## 測試與驗收
 
 ```bash
-docker compose stop app
-docker compose up -d db
-mvn spring-boot:run
+mvn -B -f verification/core/pom.xml test
+mvn -B verify
+bash scripts/acceptance.sh
 ```
 
-資料庫預設 localhost:5432/ticketing，帳密 ticketing/ticketing。可用 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD`、`RACE_WINDOW_MS` 覆寫。本機 API 可使用本機 k6，Compose k6 的 BASE_URL 預設指向容器 app。
+新版 FinalIntegrationTest 需要 PostgreSQL、Redis、Kafka Testcontainers。**沒有 Docker 時要失敗，不得以跳過代表成功**。Dockerfile 只包裝應用（跳過執行測試）；完整測試必須在 build 前透過上面命令執行。
 
-## 測試與建置
+另有 8 個使用 mock DB/cache 的核心單元測試，已在本機通過；它們不驗證真實交易與併發。驗收腳本會先跑這組，再跑整合測試及壓測。
+
+15 個新版整合案例涵蓋：併發不超賣、同 key 只建一單、輸入／admin 邊界、Lua 原子扣減、Kafka 重複訊息、重複付款、付款失敗補償、排隊／待付款到期、付款到期競爭、DLQ、資料修復、Kafka／Redis 中斷復原。另保留 2 個 V1 教學測試。測試碼數量不是已通過數量，實際結果見 VALIDATION.md。
 
 ```bash
-mvn test
-mvn package
+mkdir -p load-test/results
+# 第一次使用未被消耗的活動 2
+# 主機結果目錄需可供 k6 容器寫入；以宿主使用者執行避免權限差異。
+docker compose run --rm --user "$(id -u):$(id -g)" k6
 ```
 
-`TicketIntegrationTest` 使用 Testcontainers 的獨立 PostgreSQL，驗證初始化、查詢、單次扣庫存、404、409，以及 20 個同時預約造成的 lost update。併發測試使用共同起跑點與 200ms 延遲提高可重現性，仍受排程影響。沒有 Docker 時兩個整合測試會**跳過**，不表示它們通過；請檢查 Maven 的 Skipped 數量。
+結果存放 `load-test/results/summary.json`。1000 iterations 是預約次數，預設同時最多 100 VUs，可設定 VUS=1000；不是 1000 RPS 保證。詳細方法、10 萬次目標與歷史數據見 [壓測說明](docs/load-testing.md)。
 
-## 停止與清理
+除了 admission 壓測，`load-test/journey.js` 會等待 Kafka 建單、模擬付款、重放預約與付款，最後驗證 100 筆 PAID 與庫存守恆。`scripts/acceptance.sh` 會使用另一個全新活動執行這段旅程，結果另存 journey-summary.json。此新增壓測已在本機通過；有效已付款旅程 P95 為 10.898 秒。完整範圍與限制見 [基線結果](docs/k6-baseline.md)。
+
+若同一份來源剛通過 Java 整合驗證，可跳過重跑 Java 測試，直接啟動 Compose 與兩份 k6 壓測：
+
+```bash
+bash scripts/acceptance.sh --load-only
+```
+
+此模式會先核對本機整合測試報告、JAR 與來源檔時間；檢查不符就要求重新執行 mvn verify，不會無條件略過測試。
+
+## 稽核與補償
+
+本機示範 admin token 預設 `local-demo-admin`；分享環境前改成自己的值。直接在本機 Java 啟動而未設 ADMIN_TOKEN 時，admin API 預設拒絕。
+
+```bash
+curl -H 'X-Admin-Token: local-demo-admin' http://localhost:18080/api/admin/events/2/audit
+curl -X POST -H 'X-Admin-Token: local-demo-admin' http://localhost:18080/api/admin/events/2/reconcile
+curl -H 'X-Admin-Token: local-demo-admin' http://localhost:18080/api/admin/dead-letters
+```
+
+`remaining + QUEUED/PENDING_PAYMENT/PAID 數量 = total_stock` 才是庫存守恆。資料庫是最終正確性邊界，Redis 是可重建的前置閘門。Redis 宕機時走 DB 的 atomic UPDATE；快取過低可能短暫拒絕仍有庫存的請求，定期重投影後恢復。這個取捨、DLQ 重送與故障演練見 [Reliability](docs/reliability.md)。
+
+## V1 重現
+
+V1 預設關閉；只有明確啟用才提供 `/api/v1/tickets`，並僅允許對活動 1 預約。新版所有預約端點拒絕活動 1，避免混用。
+
+```bash
+LEGACY_ENABLED=true docker compose up -d app
+docker compose exec -T db psql -U ticketing -d ticketing -c 'UPDATE tickets SET remaining=100 WHERE event_id=1;'
+docker compose run --rm k6 run /scripts/reserve.js
+```
+
+V1 的綠燈代表重現超賣，與新版「無超賣」threshold 相反。歷史導讀與初版操作見 [V1 文件](docs/v1-readme.md)（歷史路徑為舊版，以上新路徑優先），數據見 [V1 實測](docs/v1-validation.md)。
+
+## 資料與清理
 
 ```bash
 docker compose down
 ```
 
-此操作保留 volume。若要刪除本專案全部資料庫資料並重新初始化：
+保留資料。只有確定要刪除本專案所有實驗資料時才執行 `docker compose down -v`。不要只把 remaining 重設 100 而留下新版 reservations，否則會破壞帳本守恆；壓測建議新增獨立活動，見 scripts/new-event.sql。
 
-```bash
-docker compose down -v
-docker compose up --build -d db app
-```
-
-## 專案結構
-
-```text
-src/main/java/com/ticketing/
-  controller/   HTTP API
-  service/      故意有競態的交易流程
-  repository/   Spring Data JPA
-  entity/       tickets 映射（無 @Version）
-  dto/          API 回應
-src/main/resources/  設定、schema.sql、data.sql
-src/test/            真實 PostgreSQL 整合測試
-load-test/reserve.js 1000 VUs 一次性壓測
-compose.yaml         app、db、k6
-Dockerfile           Java 21 多階段建置
-```
-
-版本依據：[Spring Boot 3.5 系統需求](https://docs.spring.io/spring-boot/3.5/system-requirements.html)（3.5.16 支援 Java 21）。
-
-## 實測結果
-
-已完成 1000 VUs 壓測：1000 次成功，最終庫存 46，資料庫僅扣掉 54 張，明確重現 lost update 與超賣。所有實驗 thresholds 通過。完整數據與本次使用的埠號見 [VALIDATION.md](VALIDATION.md)。
+這版沒有資料保留／歸檔排程、真實金流、使用者驗證、TLS、Redis Cluster、Kafka 多 broker、跨機備援、正式 migration、分區或高規模效能調校。也不宣稱 Redis 與 DB 跨系統 exactly-once；詳見限制與驗證狀態。

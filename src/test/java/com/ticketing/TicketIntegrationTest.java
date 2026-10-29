@@ -14,7 +14,9 @@ import java.util.stream.IntStream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-    properties = "ticketing.race-window-ms=200")
+    properties = {"ticketing.race-window-ms=200", "ticketing.legacy-enabled=true", "ticketing.redis-enabled=false",
+        "ticketing.consumer-enabled=false", "spring.kafka.listener.auto-startup=false", "spring.kafka.admin.auto-create=false",
+        "ticketing.jobs-initial-delay-ms=3600000"})
 @Testcontainers(disabledWithoutDocker = true)
 class TicketIntegrationTest {
     @Container @ServiceConnection
@@ -25,17 +27,17 @@ class TicketIntegrationTest {
         jdbc.update("UPDATE tickets SET remaining = 100 WHERE event_id = 1");
     }
     @Test void readsSeedReservesAndHandlesErrors() {
-        var initial = http.getForEntity("/api/tickets/1", String.class);
+        var initial = http.getForEntity("/api/v1/tickets/1", String.class);
         assertThat(initial.getStatusCode().value()).isEqualTo(200);
         assertThat(initial.getBody()).contains("\"remaining\":100");
-        assertThat(http.postForEntity("/api/tickets/1/reserve", null, String.class)
+        assertThat(http.postForEntity("/api/v1/tickets/1/reserve", null, String.class)
             .getStatusCode().value()).isEqualTo(200);
         assertThat(jdbc.queryForObject("SELECT remaining FROM tickets WHERE event_id=1", Integer.class)).isEqualTo(99);
         jdbc.update("UPDATE tickets SET remaining = 0 WHERE event_id = 1");
-        assertThat(http.postForEntity("/api/tickets/1/reserve", null, String.class)
+        assertThat(http.postForEntity("/api/v1/tickets/1/reserve", null, String.class)
             .getStatusCode().value()).isEqualTo(409);
-        assertThat(http.getForEntity("/api/tickets/999", String.class).getStatusCode().value()).isEqualTo(404);
-        assertThat(http.postForEntity("/api/tickets/999/reserve", null, String.class)
+        assertThat(http.getForEntity("/api/v1/tickets/999", String.class).getStatusCode().value()).isEqualTo(404);
+        assertThat(http.postForEntity("/api/v1/tickets/999/reserve", null, String.class)
             .getStatusCode().value()).isEqualTo(404);
     }
     @Test void concurrentSuccessesExceedPersistedDecrements() throws Exception {
@@ -46,7 +48,7 @@ class TicketIntegrationTest {
             var futures = IntStream.range(0, clients).mapToObj(i -> pool.submit(() -> {
                 ready.countDown();
                 if (!start.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Start timed out");
-                return http.postForEntity("/api/tickets/1/reserve", null, String.class).getStatusCode().value();
+                return http.postForEntity("/api/v1/tickets/1/reserve", null, String.class).getStatusCode().value();
             })).toList();
             assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
             start.countDown();

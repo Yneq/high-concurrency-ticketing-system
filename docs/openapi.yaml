@@ -1,0 +1,747 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "High-Concurrency Ticketing System",
+    "version": "V1-V8-source",
+    "description": "Local demonstration. No user authentication/ownership authorization; not a production payment API. Java integration tests, local baseline and 1000-VU/100000-iteration load goal passed within documented scope; see VALIDATION.md."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:18080"
+    }
+  ],
+  "paths": {
+    "/api/tickets/{event}/reserve": {
+      "post": {
+        "summary": "Redis admission + durable outbox + asynchronous Kafka order",
+        "description": "One ticket per request. Event 1 is reserved for unsafe V1 and is rejected. Same global key and payload replays the reservation, including terminal states; changed payload returns 409. 202 is durable admission, not completed payment. Redis cache exhaustion may temporarily reject an available DB ticket.",
+        "parameters": [
+          {
+            "name": "event",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReserveBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Reservation state, replay may return an existing terminal state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reservation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid key/user or event 1"
+          },
+          "404": {
+            "description": "Event not found"
+          },
+          "409": {
+            "description": "Sold out, admission-cache exhausted, or key payload conflict"
+          },
+          "500": {
+            "description": "Database or unexpected server error"
+          }
+        }
+      }
+    },
+    "/api/v2/tickets/{event}/reserve": {
+      "post": {
+        "summary": "Atomic SQL + synchronous order (Redis bypassed)",
+        "description": "One ticket per request. Event 1 is reserved for unsafe V1 and is rejected. Same global key and payload replays the reservation, including terminal states; changed payload returns 409. 202 is durable admission, not completed payment. Redis cache exhaustion may temporarily reject an available DB ticket.",
+        "parameters": [
+          {
+            "name": "event",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReserveBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reservation state, replay may return an existing terminal state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reservation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid key/user or event 1"
+          },
+          "404": {
+            "description": "Event not found"
+          },
+          "409": {
+            "description": "Sold out, admission-cache exhausted, or key payload conflict"
+          },
+          "500": {
+            "description": "Database or unexpected server error"
+          }
+        }
+      }
+    },
+    "/api/v3/tickets/{event}/reserve": {
+      "post": {
+        "summary": "Redis Lua + mandatory Atomic SQL + synchronous order",
+        "description": "One ticket per request. Event 1 is reserved for unsafe V1 and is rejected. Same global key and payload replays the reservation, including terminal states; changed payload returns 409. 202 is durable admission, not completed payment. Redis cache exhaustion may temporarily reject an available DB ticket.",
+        "parameters": [
+          {
+            "name": "event",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReserveBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reservation state, replay may return an existing terminal state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reservation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid key/user or event 1"
+          },
+          "404": {
+            "description": "Event not found"
+          },
+          "409": {
+            "description": "Sold out, admission-cache exhausted, or key payload conflict"
+          },
+          "500": {
+            "description": "Database or unexpected server error"
+          }
+        }
+      }
+    },
+    "/api/tickets/{event}": {
+      "get": {
+        "summary": "Read DB inventory",
+        "parameters": [
+          {
+            "name": "event",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Inventory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Inventory"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Event not found"
+          }
+        }
+      }
+    },
+    "/api/reservations/{id}": {
+      "get": {
+        "summary": "Read reservation/order workflow state",
+        "description": "The order route is a workflow-status alias. QUEUED may be returned before an orders row exists; it does not expose a payment provider object.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current workflow",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reservation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid UUID"
+          },
+          "404": {
+            "description": "Reservation not found"
+          }
+        }
+      }
+    },
+    "/api/orders/{id}": {
+      "get": {
+        "summary": "Read reservation/order workflow state",
+        "description": "The order route is a workflow-status alias. QUEUED may be returned before an orders row exists; it does not expose a payment provider object.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current workflow",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reservation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid UUID"
+          },
+          "404": {
+            "description": "Reservation not found"
+          }
+        }
+      }
+    },
+    "/api/orders/{id}/payment": {
+      "post": {
+        "summary": "Mock payment; no real funds",
+        "description": "PAID/EXPIRED/FAILED are terminal. Duplicate calls return terminal state without another stock change. If expired during payment, returns EXPIRED and releases once. QUEUED returns 409.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated or existing terminal state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reservation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "success missing or invalid UUID/body"
+          },
+          "404": {
+            "description": "Unknown reservation"
+          },
+          "409": {
+            "description": "Order not ready"
+          }
+        }
+      }
+    },
+    "/api/admin/events/{event}/audit": {
+      "get": {
+        "summary": "Read inventory conservation audit",
+        "security": [
+          {
+            "AdminToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "event",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Audit"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong admin token"
+          },
+          "404": {
+            "description": "Event not found"
+          },
+          "500": {
+            "description": "Repair cannot resolve held > total or DB failure"
+          }
+        }
+      }
+    },
+    "/api/admin/events/{event}/reconcile": {
+      "post": {
+        "summary": "Repair DB remaining from durable reservation ledger and project Redis",
+        "security": [
+          {
+            "AdminToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "event",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Audit"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong admin token"
+          },
+          "404": {
+            "description": "Event not found"
+          },
+          "500": {
+            "description": "Repair cannot resolve held > total or DB failure"
+          }
+        }
+      }
+    },
+    "/api/admin/dead-letters": {
+      "get": {
+        "summary": "Most recent 100 persisted dead letters",
+        "security": [
+          {
+            "AdminToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dead letters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeadLetter"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin token required"
+          }
+        }
+      }
+    },
+    "/api/admin/dead-letters/{id}/replay": {
+      "post": {
+        "summary": "Republish valid UUID payload after investigation",
+        "security": [
+          {
+            "AdminToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Replay sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid UUID payload cannot replay"
+          },
+          "403": {
+            "description": "Admin token required"
+          },
+          "404": {
+            "description": "Unknown dead letter"
+          },
+          "500": {
+            "description": "Broker unavailable; replay not marked complete"
+          }
+        }
+      }
+    },
+    "/api/v1/tickets/{event}": {
+      "get": {
+        "summary": "Unsafe V1 experiment read (only when LEGACY_ENABLED=true)",
+        "parameters": [
+          {
+            "name": "event",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Inventory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Inventory"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Missing event or V1 disabled"
+          }
+        }
+      }
+    },
+    "/api/v1/tickets/{event}/reserve": {
+      "post": {
+        "summary": "Intentionally unsafe JPA reservation; event 1 only, opt-in",
+        "parameters": [
+          {
+            "name": "event",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unsafe successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyReservation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Only event 1 allowed"
+          },
+          "404": {
+            "description": "Missing event or V1 disabled"
+          },
+          "409": {
+            "description": "Sold out"
+          },
+          "503": {
+            "description": "Interrupted"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "AdminToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Admin-Token"
+      }
+    },
+    "schemas": {
+      "ReserveBody": {
+        "type": "object",
+        "required": [
+          "userId"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        }
+      },
+      "PaymentBody": {
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Reservation": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "eventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "PENDING_PAYMENT",
+              "PAID",
+              "EXPIRED",
+              "FAILED"
+            ]
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Inventory": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "totalStock": {
+            "type": "integer"
+          },
+          "remaining": {
+            "type": "integer"
+          }
+        }
+      },
+      "Audit": {
+        "type": "object",
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total_stock": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "remaining": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "held": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "discrepancy": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "paid": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "duplicate_orders": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "DeadLetter": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payload": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "replayed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "ReplayResult": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "REPLAYED"
+            ]
+          }
+        }
+      },
+      "LegacyReservation": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "RESERVED"
+            ]
+          },
+          "remaining": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  }
+}

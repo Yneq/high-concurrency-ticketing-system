@@ -4,3 +4,39 @@ CREATE TABLE IF NOT EXISTS tickets (
     total_stock INTEGER NOT NULL CHECK (total_stock >= 0),
     remaining INTEGER NOT NULL CHECK (remaining >= 0 AND remaining <= total_stock)
 );
+
+-- Durable admission: one row per idempotency key, one unit per accepted reservation.
+CREATE TABLE IF NOT EXISTS reservations (
+    id UUID PRIMARY KEY,
+    idempotency_key VARCHAR(128) NOT NULL UNIQUE,
+    event_id BIGINT NOT NULL REFERENCES tickets(event_id),
+    user_id VARCHAR(100) NOT NULL,
+    status VARCHAR(24) NOT NULL CHECK (status IN ('QUEUED','PENDING_PAYMENT','PAID','EXPIRED','FAILED')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS reservations_expiry ON reservations(expires_at)
+    WHERE status IN ('QUEUED','PENDING_PAYMENT');
+CREATE TABLE IF NOT EXISTS orders (
+    id UUID PRIMARY KEY REFERENCES reservations(id),
+    status VARCHAR(24) NOT NULL CHECK (status IN ('PENDING_PAYMENT','PAID','EXPIRED','FAILED')),
+    payment_reference UUID UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS outbox (
+    id UUID PRIMARY KEY,
+    reservation_id UUID NOT NULL REFERENCES reservations(id),
+    published_at TIMESTAMPTZ,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(created_at) WHERE published_at IS NULL;
+CREATE TABLE IF NOT EXISTS dead_letters (
+    id UUID PRIMARY KEY,
+    payload TEXT NOT NULL,
+    error TEXT NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    replayed_at TIMESTAMPTZ
+);

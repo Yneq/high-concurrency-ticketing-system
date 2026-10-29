@@ -1,0 +1,147 @@
+{
+  "date": "2026-10-30",
+  "execution": "User local Docker Compose, saved JSON independently read by assistant",
+  "scope": {
+    "vus": 1000,
+    "admission_iterations": 100000,
+    "journey_iterations": 100000,
+    "initial_stock_per_event": 100,
+    "admission_event": 1793300559,
+    "journey_event": 1793300560
+  },
+  "reports": {
+    "admission": {
+      "raw_report": "load-test/results/event-1793300559.json",
+      "sha256": "c3227daf5938587f2a337eba6faacda01a177e1503a809a39c578db5b81ee4d3",
+      "duration_ms": 35730.793461,
+      "all_thresholds_passed": true,
+      "metrics": {
+        "http_req_failed": {
+          "passes": 0,
+          "fails": 100003,
+          "rate": 0
+        },
+        "http_reqs": {
+          "count": 100003,
+          "rate": 2798.790351777461
+        },
+        "admission_latency_ms": {
+          "p(99)": 1190.3190535899998,
+          "avg": 343.65289944568514,
+          "min": 1.0335,
+          "med": 262.510229,
+          "max": 1877.773153,
+          "p(95)": 857.2475958499998
+        },
+        "vus_max": {
+          "value": 1000,
+          "min": 1000,
+          "max": 1000
+        },
+        "oversold_units": {
+          "count": 0,
+          "rate": 0
+        },
+        "duplicate_orders": {
+          "count": 0,
+          "rate": 0
+        },
+        "checks": {
+          "fails": 0,
+          "rate": 1,
+          "passes": 100001
+        },
+        "accepted_reservations": {
+          "count": 100,
+          "rate": 2.798706390585744
+        },
+        "sold_out": {
+          "count": 99900,
+          "rate": 2795.9076841951583
+        },
+        "unexpected_responses": {
+          "count": 0,
+          "rate": 0
+        },
+        "inventory_discrepancy": {
+          "count": 0,
+          "rate": 0
+        },
+        "iterations": {
+          "count": 100000,
+          "rate": 2798.706390585744
+        }
+      }
+    },
+    "journey": {
+      "raw_report": "load-test/results/journey-1793300560.json",
+      "sha256": "d79d5c072b90f4ea182a9d85375f623b5008d08b81944a3eb335c0ed5329f1ce",
+      "duration_ms": 29167.312583,
+      "all_thresholds_passed": true,
+      "metrics": {
+        "http_reqs": {
+          "count": 101525,
+          "rate": 3480.780058536255
+        },
+        "vus_max": {
+          "value": 1000,
+          "min": 1000,
+          "max": 1000
+        },
+        "journey_errors": {
+          "rate": 0,
+          "count": 0
+        },
+        "checks": {
+          "rate": 1,
+          "passes": 601,
+          "fails": 0
+        },
+        "paid_journey_ms": {
+          "p(95)": 12643.5,
+          "p(99)": 12873.05,
+          "avg": 7852.13,
+          "min": 1312,
+          "med": 8128.5,
+          "max": 12878
+        },
+        "accepted_reservations": {
+          "count": 100,
+          "rate": 3.4284955021287913
+        },
+        "http_req_failed": {
+          "rate": 0,
+          "passes": 0,
+          "fails": 101525
+        },
+        "integrity_errors": {
+          "count": 0,
+          "rate": 0
+        },
+        "iterations": {
+          "count": 100000,
+          "rate": 3428.495502128791
+        },
+        "orders_paid": {
+          "count": 100,
+          "rate": 3.4284955021287913
+        }
+      }
+    }
+  },
+  "journey_audit_verified_by_teardown_check": {
+    "total_stock": 100,
+    "remaining": 0,
+    "held": 100,
+    "paid": 100,
+    "discrepancy": 0,
+    "duplicate_orders": 0
+  },
+  "limits": [
+    "Not 100000 concurrent connections or RPS",
+    "Only 100 accepted/paid reservations per event; most responses expected business rejection",
+    "Closed-loop shared-iterations short test on one local Docker host",
+    "No sustained paid-order TPS or multi-node HA claim",
+    "Failure recovery behavior tested separately by integration suite; not injected during k6 load"
+  ]
+}

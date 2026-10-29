@@ -1,0 +1,82 @@
+{
+  "date": "2026-10-30",
+  "core_unit_tests": {
+    "source": "verification/core/target/surefire-reports/TEST-com.ticketing.CoreServiceTest.xml",
+    "result": {
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "database": "mock",
+    "cache": "mock",
+    "compiled_main_classes": [
+      "ApiModels",
+      "AdmissionGate",
+      "ReservationService",
+      "TicketApi"
+    ]
+  },
+  "static_checks": {
+    "compose_config": "passed",
+    "openapi_refs": "passed",
+    "maven_xml": "passed",
+    "javascript_syntax": "passed",
+    "shell_syntax": "passed",
+    "git_diff_whitespace": "passed"
+  },
+  "full_build": "passed: user ran mvn verify; packaged JAR present; both local Surefire XML reports inspected",
+  "new_integration_tests": {
+    "defined": 15,
+    "executed": true,
+    "result": {
+      "tests": 15,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "v2_to_v8_load_test": {
+    "executed": true,
+    "stage": "final only; V2/V3 performance comparison not yet run",
+    "iterations": 1000,
+    "vus": 100,
+    "all_thresholds_passed": true,
+    "summary": "docs/k6-baseline-results.json"
+  },
+  "requests_100000": {
+    "executed": true,
+    "passed": true,
+    "vus": 1000,
+    "admission_iterations": 100000,
+    "journey_iterations": 100000,
+    "accepted_per_event": 100,
+    "paid_orders": 100,
+    "all_thresholds_passed": true,
+    "summary": "docs/k6-100k-results.json",
+    "execution": "user local terminal; saved JSON verified by assistant"
+  },
+  "end_to_end_journey_load_test": {
+    "defined": true,
+    "syntax_check": "passed",
+    "executed": true,
+    "iterations": 1000,
+    "vus": 100,
+    "paid_orders": 100,
+    "all_thresholds_passed": true,
+    "summary": "docs/k6-baseline-results.json"
+  },
+  "root_test_suite": {
+    "tests": 17,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "execution": "user local terminal",
+    "verification": "local Surefire XML read by assistant"
+  },
+  "compose_runtime": {
+    "executed": true,
+    "result": "passed: user load-only acceptance reached both k6 experiments"
+  },
+  "delivery_status": "V1-V8 local functional and load acceptance passed within documented scope; production HA/sustained paid TPS not certified"
+}

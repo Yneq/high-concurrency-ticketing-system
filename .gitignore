@@ -2,3 +2,6 @@ target/
 .idea/
 *.iml
 .DS_Store
+.env
+load-test/results/*
+!load-test/results/.gitkeep

@@ -3,7 +3,7 @@ import { check, fail, sleep } from 'k6';
 import { Counter } from 'k6/metrics';
 const base = __ENV.BASE_URL || 'http://localhost:8080';
 const eventId = __ENV.EVENT_ID || '1';
-const url = `${base}/api/tickets/${eventId}`;
+const url = `${base}/api/v1/tickets/${eventId}`;
 const successes = new Counter('reservation_successes');
 const soldOut = new Counter('sold_out');
 const unexpected = new Counter('unexpected_responses');
